@@ -23,20 +23,23 @@ def signing_identity():
     print('WARNING: no signing cert found, falling back to ad-hoc. Accessibility will reset on every rebuild.')
     return '-'
 
-# The Arvolve mark, for the window header and the Dock icon
-# The Arvolve logo the app icon and the window are drawn from
-LOGO = ROOT / 'macos/logo_round.png'
+# The ArX VR mark (the arch over the orb), for the window header and the Dock icon
+LOGO = ROOT / 'macos/arxvr_icon.png'
 
 def brand_assets(resources):
-    """The window's logo, and a Dock icon that is black edge to edge with the mark filling it:
-    a round logo on transparency gets set on a white tile by macOS."""
-    from PIL import Image
+    """The window's logo, and a Dock icon drawn as the standard macOS rounded square in black:
+    any other shape gets set on a grey tile by macOS."""
+    from PIL import Image, ImageDraw
     resources.mkdir(parents=True, exist_ok=True)
     logo = Image.open(LOGO).convert('RGBA')
     logo.resize((256, 256), Image.LANCZOS).save(resources / 'logo.png')
-    tile = Image.new('RGBA', (1024, 1024), (0, 0, 0, 255))
-    mark = logo.resize((900, 900), Image.LANCZOS)
-    tile.alpha_composite(mark, (62, 62))
+    # Apple's icon grid: an 824 px rounded square inside the 1024 canvas, the rest transparent
+    shape = Image.new('L', (1024, 1024), 0)
+    ImageDraw.Draw(shape).rounded_rectangle((100, 100, 923, 923), 185, fill=255)
+    # Black rounded square, the mark at 75% of it so it clears the edges
+    tile = Image.new('RGBA', (1024, 1024), (0, 0, 0, 0))
+    tile.paste((0, 0, 0, 255), (0, 0, 1024, 1024), shape)
+    tile.alpha_composite(logo.resize((618, 618), Image.LANCZOS), (203, 203))
     iconset = CACHE.parent / 'AppIcon.iconset'
     shutil.rmtree(iconset, ignore_errors=True); iconset.mkdir(parents=True)
     for size in (16, 32, 128, 256, 512):

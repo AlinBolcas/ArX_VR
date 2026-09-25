@@ -63,6 +63,9 @@ typedef struct {
     const void* sharpenChain;
     const XrCompositionLayerBaseHeader* order[FRAME_MAX_LAYERS];
     uint32_t count;
+    // Layers that did not fit, and whether this build leaves out a splat world's cube to make room
+    uint32_t dropped;
+    int noCube;
 } FrameLayers;
 
 // What every layer builder reads about this frame, worked out once
@@ -95,6 +98,7 @@ typedef struct {
 // missing points at whatever grew.
 static void pushLayer(XrCtx* ctx, FrameLayers* layers, const void* layer) {
     if (layers->count >= FRAME_MAX_LAYERS || layers->count >= (uint32_t)ctx->maxLayerCount) {
+        layers->dropped++;
         if (!ctx->layerDropWarned) {
             ctx->layerDropWarned = 1;
             LOGE("frame needs more than %d composition layers, dropping the rest rather than lose the frame",
@@ -203,7 +207,8 @@ static void setSharpenChain(XrCtx* ctx, FrameLayers* layers) {
 static void addRoomLayer(XrCtx* ctx, const FrameView* view, FrameLayers* layers) {
     // A splat world drawn as a cube round each eye: the compositor turns it with the
     // head at its own rate, all the way round, so there is no edge to turn past
-    int cubeUnder = view->roomOn && roomEffective(ctx) == ROOM_STYLE_SPLAT && ctx->splatCubeReady && !ctx->passthrough;
+    int cubeUnder = view->roomOn && roomEffective(ctx) == ROOM_STYLE_SPLAT && ctx->splatCubeReady && !ctx->passthrough
+            && !layers->noCube;
     if (cubeUnder) {
         for (int eye = 0; eye < 2; eye++) {
             XrCompositionLayerCubeKHR* cube = &layers->splatCube[eye];
@@ -1039,33 +1044,42 @@ Java_com_limelight_binding_video_XrRenderer_nativeEndFrame(JNIEnv* env, jobject 
         }
     }
 
+    // The keyboard, pie and pointers go up last, so a crowded frame would lose them first. When
+    // anything fails to fit, the splat world's cube (two layers) makes way: the sharp view stays.
     FrameLayers layers;
-    layers.count = 0;
-    setSharpenChain(ctx, &layers);
+    for (int noCube = 0; noCube < 2; noCube++) {
+        layers.count = 0;
+        layers.dropped = 0;
+        layers.noCube = noCube;
+        setSharpenChain(ctx, &layers);
 
-    // The panorama first, so a splat world's view sits over it
-    addBackgroundLayers(ctx, &view, &layers);
-    addRoomLayer(ctx, &view, &layers);
-    addGlowLayer(ctx, &view, &layers);
-    if (ctx->everRendered && ctx->shouldRender) {
-        uint32_t screensFrom = layers.count;
-        addVideoLayers(ctx, &view, &layers);
-        // Extra desktops belong to you, not to the environment: a room hangs the main
-        // picture on its wall, and the rest stay where you put them
-        addDesktopLayers(ctx, &view, &layers);
-        sortScreensByDistance(ctx, &layers, screensFrom);
-        addOverlayLayer(ctx, &view, &layers);
-        addHandleLayer(ctx, &view, &layers);
-        addBarButtonLayers(ctx, &view, &layers);
-        addExitPromptLayer(ctx, &view, &layers);
-        addLockLayer(ctx, &view, &layers);
-        addPickerLayers(ctx, &view, &layers);
-        addCogLayers(ctx, &view, &layers);
-        addDockLayers(ctx, &view, &layers);
-        addKeyboardLayers(ctx, &view, &layers);
-        addGuideLayer(ctx, &view, &layers);
-        addPieLayer(ctx, &view, &layers);
-        addPointerLayers(ctx, &view, &layers);
+        // The panorama first, so a splat world's view sits over it
+        addBackgroundLayers(ctx, &view, &layers);
+        addRoomLayer(ctx, &view, &layers);
+        addGlowLayer(ctx, &view, &layers);
+        if (ctx->everRendered && ctx->shouldRender) {
+            uint32_t screensFrom = layers.count;
+            addVideoLayers(ctx, &view, &layers);
+            // Extra desktops belong to you, not to the environment: a room hangs the main
+            // picture on its wall, and the rest stay where you put them
+            addDesktopLayers(ctx, &view, &layers);
+            sortScreensByDistance(ctx, &layers, screensFrom);
+            addOverlayLayer(ctx, &view, &layers);
+            addHandleLayer(ctx, &view, &layers);
+            addBarButtonLayers(ctx, &view, &layers);
+            addExitPromptLayer(ctx, &view, &layers);
+            addLockLayer(ctx, &view, &layers);
+            addPickerLayers(ctx, &view, &layers);
+            addCogLayers(ctx, &view, &layers);
+            addDockLayers(ctx, &view, &layers);
+            addKeyboardLayers(ctx, &view, &layers);
+            addGuideLayer(ctx, &view, &layers);
+            addPieLayer(ctx, &view, &layers);
+            addPointerLayers(ctx, &view, &layers);
+        }
+        if (!layers.dropped) {
+            break;
+        }
     }
 
     // Said once and only once, since a frame that crowds the limit is usually
