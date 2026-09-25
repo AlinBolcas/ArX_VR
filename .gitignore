@@ -1,0 +1,38 @@
+# Superseded material, kept on disk only
+archive/
+
+# Build output: only source goes in the repo
+quest_app/build/
+quest_app/dist/
+quest_app/.gradle/
+quest_app/.cxx/
+quest_app/streaming/build/
+quest_app/streaming/.cxx/
+quest_app/streaming/src/test/cpp/build/
+quest_app/host_tools/dist/
+local.properties
+*.apk
+*.aab
+*.keystore
+*.jks
+**/__pycache__/
+*.pyc
+
+# Keys and local settings
+.env
+.env.*
+
+# Worlds are made on your Mac and pushed to the headset; far too big for git
+*.splat
+*.spz
+*.ply
+*.ogg
+
+# The Android toolchain, if installed inside the repo
+.arxvr_toolchain/
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/
+*.iml

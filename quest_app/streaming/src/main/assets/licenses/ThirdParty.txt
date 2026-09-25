@@ -1,0 +1,21 @@
+ArX VR workspace preview 0.2.0
+
+Streaming, pairing, decoding, XR presentation, hand/controller interaction and the spatial keyboard are adapted from Moonlight Android XR by Gilleece and Moonlight Android contributors.
+Source: https://github.com/Gilleece/moonlight-android-xr
+Revision: a33b8dbcce20092c25ba5f08caa1c905864b426b
+Licence: GNU GPL version 3. Full text is packaged as Moonlight-GPL-3.0.txt.
+ArX changes: workspace entry and tutorial, Quest 2 defaults, build compatibility, capture action, capability-gated dictation with review, local diagnostics, and removed upstream reporting workflow.
+
+Moonlight-common-c: GPLv3. ENet and NanoRS: licences included separately.
+OpenSSL 4.0.2: Apache 2.0, licence included. Opus: BSD-style licence included.
+Khronos OpenXR loader 1.1.49: Apache 2.0, licence included.
+Additional dependencies: Android/NDK, LiteRT 1.4.2 and GPU delegate (Apache 2.0), OkHttp 4.12.0 (Apache 2.0), Bouncy Castle 1.85/1.85.2 (MIT-style), JCodec 0.2.5 (BSD), JmDNS 3.6.3 (Apache 2.0), ShieldControllerExtensions 1.0.1 (Apache 2.0), desugar_jdk_libs 2.1.5 (GPLv2 with Classpath Exception). Their original notices remain in their source/dependency archives.
+
+The PSX Cinema environment is "VR Cinema Environment" by fangzhangmnm:
+https://skfb.ly/6VuIX
+Creative Commons Attribution 4.0: https://creativecommons.org/licenses/by/4.0/
+Modified upstream: mesh baked into a flat room format with its embedded texture. Included unchanged from the pinned Moonlight XR snapshot.
+
+The depth model and panorama photographs are not included. Depth inference is disabled in this preview. Supporting upstream renderer code remains for dependency coherence.
+
+The original 0.1.0 NativeActivity baseline is separate and remains available as a rollback artifact. Freebird and Blender are not dependencies of this workspace.

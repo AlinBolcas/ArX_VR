@@ -1,0 +1,224 @@
+<title>arxVR splat harness</title>
+<style>
+  body { margin: 0; background: #0b0c0f; color: #d8d8dc; font: 13px/1.4 system-ui, sans-serif; padding: 12px 16px; }
+  #bar { display: flex; gap: 16px; flex-wrap: wrap; align-items: baseline; margin-bottom: 8px; }
+  #bar b { color: #fff; }
+  #wrap { display: flex; gap: 6px; flex-wrap: wrap; }
+  figure { margin: 0; }
+  figcaption { color: #9a9aa2; padding: 4px 0; }
+  canvas { width: min(46vw, 640px); aspect-ratio: 1; background: #000; display: block; }
+  #score { white-space: pre; font-family: ui-monospace, monospace; color: #b8c4d8; margin-top: 8px; }
+</style>
+<div id="bar">
+  <b>__NAME__</b> <span>__COUNT__ splats</span>
+  <span>drag to look, WASD to move, Q for the Quest 2 lens, C to compare</span>
+  <span id="status">loading</span>
+</div>
+<div id="wrap">
+  <figure><canvas id="ours" width="720" height="720"></canvas><figcaption>arxVR headset shaders (xr_splat_shaders.h, C packing)</figcaption></figure>
+  <figure><canvas id="spark" width="720" height="720"></canvas><figcaption>Spark 2.2 reference</figcaption></figure>
+</div>
+<div id="score"></div>
+<script type="importmap">
+  { "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.180.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.180.0/examples/jsm/",
+      "@sparkjsdev/spark": "https://cdn.jsdelivr.net/npm/@sparkjsdev/spark@2.2.0/dist/spark.module.js" } }
+</script>
+<script type="module">
+  import * as THREE from 'three';
+  import { SparkRenderer, SplatMesh } from '@sparkjsdev/spark';
+
+  const VERT = __VERTEX__, FRAG = __FRAGMENT__, COUNT = __COUNT__;
+  const SIZE = 720, BUCKETS = 65536;
+  const status = document.getElementById('status');
+  const log = (t) => { status.textContent = t; };
+
+  // The camera both sides share, in the headset's axes: y up, -z ahead, eye at the origin
+  const camera = new THREE.PerspectiveCamera(90, 1, 0.05, 200);
+  const look = { yaw: 0, pitch: 0 };
+  let questLens = false;
+  function placeCamera() {
+    camera.rotation.set(look.pitch, look.yaw, 0, 'YXZ');
+    camera.updateMatrixWorld();
+    if (questLens) {
+      // A Quest 2 left eye: wider outwards and downwards than in and up
+      const t = (d) => Math.tan(d * Math.PI / 180) * 0.05;
+      camera.projectionMatrix.makePerspective(-t(50), t(43), t(45), -t(52), 0.05, 200);
+      camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+    } else {
+      camera.updateProjectionMatrix();
+    }
+  }
+
+  // ---- the headset's renderer, line for line what xr_splat.c does ----
+  const gl = document.getElementById('ours').getContext('webgl2', { alpha: false, antialias: false, preserveDrawingBuffer: true });
+  function shader(type, src) {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src);
+    gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+    return s;
+  }
+  const program = gl.createProgram();
+  gl.attachShader(program, shader(gl.VERTEX_SHADER, VERT));
+  gl.attachShader(program, shader(gl.FRAGMENT_SHADER, FRAG));
+  gl.linkProgram(program);
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
+  const u = (n) => gl.getUniformLocation(program, n);
+
+  const texels = new Uint32Array(await (await fetch('texels.bin')).arrayBuffer());
+  const words = new Float32Array(texels.buffer);
+  const centers = new Float32Array(COUNT * 3);
+  for (let i = 0; i < COUNT; i++) { centers[3 * i] = words[8 * i]; centers[3 * i + 1] = words[8 * i + 1]; centers[3 * i + 2] = words[8 * i + 2]; }
+
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32UI, 4096, texels.length / (4096 * 4), 0, gl.RGBA_INTEGER, gl.UNSIGNED_INT, texels);
+
+  const orderBuffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, orderBuffer);
+  gl.bufferData(gl.ARRAY_BUFFER, COUNT * 4, gl.DYNAMIC_DRAW);
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+  gl.vertexAttribIPointer(0, 1, gl.UNSIGNED_INT, 4, 0);
+  gl.vertexAttribDivisor(0, 1);
+  gl.enableVertexAttribArray(0);
+  gl.bindVertexArray(null);
+
+  // splatSortByDistance: furthest first, 16 bit buckets over this eye's own range
+  const order = new Uint32Array(COUNT), keys = new Float32Array(COUNT), counts = new Uint32Array(BUCKETS);
+  const sortedAt = new THREE.Vector3(1e9, 0, 0);
+  function sortFor(eye) {
+    let near = Infinity, far = 0;
+    for (let i = 0; i < COUNT; i++) {
+      const dx = centers[3 * i] - eye.x, dy = centers[3 * i + 1] - eye.y, dz = centers[3 * i + 2] - eye.z;
+      const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      keys[i] = d; if (d < near) near = d; if (d > far) far = d;
+    }
+    const scale = far > near ? (BUCKETS - 1) / (far - near) : 0;
+    counts.fill(0);
+    const bucket = new Uint32Array(COUNT);
+    for (let i = 0; i < COUNT; i++) { const k = (BUCKETS - 1) - Math.floor((keys[i] - near) * scale); bucket[i] = k; counts[k]++; }
+    let start = 0;
+    for (let k = 0; k < BUCKETS; k++) { const n = counts[k]; counts[k] = start; start += n; }
+    for (let i = 0; i < COUNT; i++) order[counts[bucket[i]]++] = i;
+    gl.bindBuffer(gl.ARRAY_BUFFER, orderBuffer);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, order);
+    sortedAt.copy(eye);
+  }
+
+  function drawOurs() {
+    if (camera.position.distanceTo(sortedAt) > 0.01) sortFor(camera.position);
+    gl.viewport(0, 0, SIZE, SIZE);
+    gl.clearColor(0.02, 0.02, 0.03, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(program);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(u('u_splats'), 0);
+    const p = camera.projectionMatrix.elements;
+    gl.uniformMatrix4fv(u('u_view'), false, camera.matrixWorldInverse.elements);
+    gl.uniformMatrix4fv(u('u_proj'), false, p);
+    gl.uniform2f(u('u_focal'), p[0] * SIZE * 0.5, p[5] * SIZE * 0.5);
+    gl.uniform2f(u('u_viewport'), SIZE, SIZE);
+    gl.bindVertexArray(vao);
+    gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, COUNT);
+    gl.bindVertexArray(null);
+  }
+
+  // ---- Spark, the reference ----
+  const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('spark'), antialias: false, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(1);
+  renderer.setSize(SIZE, SIZE, false);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color().setRGB(0.02, 0.02, 0.03, THREE.SRGBColorSpace);
+  scene.add(new SparkRenderer({ renderer }));
+  const mesh = new SplatMesh({ fileBytes: new Uint8Array(await (await fetch('world.splat')).arrayBuffer()), fileType: 'splat' });
+  await mesh.initialized;
+  scene.add(mesh);
+
+  function frame() {
+    placeCamera();
+    drawOurs();
+    renderer.render(scene, camera);
+  }
+  function loop() { frame(); requestAnimationFrame(loop); }
+  loop();
+  log('ready');
+
+  // ---- steering ----
+  const held = new Set();
+  let dragging = null;
+  addEventListener('pointerdown', (e) => { if (e.target.tagName === 'CANVAS') dragging = { x: e.clientX, y: e.clientY }; });
+  addEventListener('pointerup', () => { dragging = null; });
+  addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    look.yaw += (e.clientX - dragging.x) * 0.005;
+    look.pitch = Math.max(-1.5, Math.min(1.5, look.pitch + (e.clientY - dragging.y) * 0.005));
+    dragging = { x: e.clientX, y: e.clientY };
+  });
+  addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    if (k === 'q') questLens = !questLens;
+    else if (k === 'c') compare();
+    else held.add(k);
+  });
+  addEventListener('keyup', (e) => held.delete(e.key.toLowerCase()));
+  setInterval(() => {
+    const step = new THREE.Vector3((held.has('d') ? 1 : 0) - (held.has('a') ? 1 : 0), 0, (held.has('s') ? 1 : 0) - (held.has('w') ? 1 : 0));
+    if (step.lengthSq()) camera.position.add(step.multiplyScalar(0.03).applyEuler(new THREE.Euler(0, look.yaw, 0)));
+  }, 16);
+
+  // ---- the score: six views, both sides read back, compared on a coarse grid ----
+  const VIEWS = [
+    { name: 'ahead', yaw: 0, pitch: 0, at: [0, 0, 0] },
+    { name: 'left', yaw: Math.PI / 2, pitch: 0, at: [0, 0, 0] },
+    { name: 'behind', yaw: Math.PI, pitch: 0, at: [0, 0, 0] },
+    { name: 'down', yaw: 0.4, pitch: -0.9, at: [0, 0, 0] },
+    { name: 'leaning', yaw: -0.5, pitch: 0.1, at: [0.3, -0.1, -0.25] },
+    { name: 'quest lens', yaw: 2.2, pitch: 0.05, at: [0, 0, 0], quest: true },
+  ];
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  function pixelsOurs() { const b = new Uint8Array(SIZE * SIZE * 4); gl.readPixels(0, 0, SIZE, SIZE, gl.RGBA, gl.UNSIGNED_BYTE, b); return b; }
+  function pixelsSpark() { const c = renderer.getContext(); const b = new Uint8Array(SIZE * SIZE * 4); c.readPixels(0, 0, SIZE, SIZE, c.RGBA, c.UNSIGNED_BYTE, b); return b; }
+  // Mean difference in 0..255 after averaging 8x8 blocks, so a splat's edge a pixel over does not count
+  function score(a, b) {
+    const B = 8, n = SIZE / B;
+    let total = 0, lumA = 0, lumB = 0;
+    for (let by = 0; by < n; by++) for (let bx = 0; bx < n; bx++) {
+      for (let ch = 0; ch < 3; ch++) {
+        let sa = 0, sb = 0;
+        for (let y = 0; y < B; y++) for (let x = 0; x < B; x++) {
+          const i = ((by * B + y) * SIZE + bx * B + x) * 4 + ch;
+          sa += a[i]; sb += b[i];
+        }
+        total += Math.abs(sa - sb) / (B * B);
+        lumA += sa; lumB += sb;
+      }
+    }
+    return { diff: +(total / (n * n * 3)).toFixed(2), brightness: +((lumA - lumB) / (SIZE * SIZE * 3)).toFixed(2) };
+  }
+  async function compare() {
+    const rows = [];
+    for (const v of VIEWS) {
+      look.yaw = v.yaw; look.pitch = v.pitch; questLens = !!v.quest;
+      camera.position.set(...v.at);
+      await wait(1500);
+      frame();
+      rows.push({ view: v.name, ...score(pixelsOurs(), pixelsSpark()) });
+    }
+    look.yaw = 0; look.pitch = 0; questLens = false; camera.position.set(0, 0, 0);
+    document.getElementById('score').textContent = 'mean difference per channel, 0..255, 8x8 blocks (brightness: ours minus Spark)\n'
+      + rows.map((r) => `${r.view.padEnd(11)} ${String(r.diff).padStart(6)}   brightness ${r.brightness}`).join('\n');
+    window.harnessResult = rows;
+    return rows;
+  }
+  window.compare = compare;
+  window.goView = (i) => { const v = VIEWS[i]; look.yaw = v.yaw; look.pitch = v.pitch; questLens = !!v.quest; camera.position.set(...v.at); };
+</script>

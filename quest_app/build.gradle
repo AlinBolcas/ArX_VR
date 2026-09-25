@@ -1,0 +1,2 @@
+// The app is the :streaming module; this root only pins the Android plugin it builds with
+plugins { id 'com.android.application' version '8.7.3' apply false }
